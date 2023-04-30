@@ -2,28 +2,23 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import hashlib
+
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GridSearchCV
 import time
+
 from statsmodels.miscmodels.ordinal_model import OrderedModel
 from sklearn.metrics import accuracy_score
-from sklearn.metrics import precision_score, make_scorer
+from sklearn.metrics import precision_score
 import warnings
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import confusion_matrix
 import seaborn as sns
-    
+from imblearn.over_sampling import SMOTE
+
 # ignore warnings
 warnings.filterwarnings("ignore")
-
-
-def analyse_data_structure(dataframe):
-    print(dataframe.describe())
-    dataframe.hist(bins=50, figsize=(20, 15))  # plot histogram for attributes
-    plt.savefig(fname="his.png")
-    plt.show()
-    return
 
 
 def choose_fixed_indices(df):
@@ -46,7 +41,7 @@ def check_correlation(df, attribute):
     return corr_matrix[attribute]
 
 
-def plot_regularize(df, cls_features, cls_labels):
+def plot_regularize(df, cls_features, cls_labels, savefig=False):
     fig = plt.figure()
     ax = plt.subplot(111)
 
@@ -67,7 +62,7 @@ def plot_regularize(df, cls_features, cls_labels):
 
     for column, color in zip(range(weights.shape[1]), colors):
         plt.plot(params, weights[:, column],
-                 label=df.columns[column + 1],
+                 label=df.columns[column],
                  color=color)
     plt.axhline(0, color='black', linestyle='--', linewidth=3)
     plt.xlim([10 ** (-5), 10 ** 5])
@@ -75,35 +70,54 @@ def plot_regularize(df, cls_features, cls_labels):
     plt.xlabel('C (inverse regularization strength)')
     plt.xscale('log')
     plt.legend(loc='upper left')
+    if savefig:
+        plt.savefig('regularisation.png')
     plt.show()
     return
 
 
-def grid_Search(x_train, y_train):
-    param_grid = [
-        {'penalty': ['l1', 'l2', 'elasticnet'], 'C': np.logspace(-5, 0, 10), 'l1_ratio': np.linspace(0, 1, 10)}
-    ]
-    # Create a logistic regression model
-    logreg = LogisticRegression(max_iter=1000, class_weight='balanced', tol=0.00001)
-    # Create a precision scorer
-    precision_scorer = make_scorer(precision_score, average='weighted')
-    # Create a GridSearchCV object
-    grid_search = GridSearchCV(logreg, param_grid, cv=5, n_jobs=-1, scoring=precision_scorer)
-
-    # Fit the GridSearchCV object to the data
-    grid_search.fit(x_train, y_train)
-    print(grid_search.best_params_)
-    return
+def grid_Search_new(x_data, y_data, estimator, param_grid, penalty_value):
+    grid = GridSearchCV(estimator, param_grid, cv=5, n_jobs=-1)
+    grid.fit(x_data, y_data)
+    print(penalty_value, "-->", grid.best_params_)
+    # print(grid.best_params_)
+    return grid.best_params_
 
 
-def plot_hist(df):
-    quality_counts = df['quality'].value_counts().sort_index()
-    quality_counts.plot(kind='bar')
-    plt.xlabel('Sensory preference')
-    plt.ylabel('Frequency(Wine samples)')
-    plt.grid(axis='y')
-    plt.show()
-    return
+class WineDataAnalyzer:
+    def __init__(self, dataframe):
+        self.df = dataframe
+
+    def plot_hist(self, column, savefig=False, filename=None):
+        quality_counts = self.df['quality'].value_counts().sort_index()
+        quality_counts.plot(kind='bar')
+        plt.xlabel('Sensory preference')
+        plt.ylabel('Frequency(Wine samples)')
+        plt.grid(axis='y')
+        if savefig:
+            if not filename:
+                filename = f'{column}_hist.png'
+            plt.savefig(filename)
+        plt.show()
+
+    def plot_correlation_heatmap(self, savefig=False, filename=None):
+        corr = self.df.corr()
+        plt.subplots(figsize=(15, 10))
+        sns.heatmap(corr, xticklabels=corr.columns, yticklabels=corr.columns, annot=True,
+                    cmap=sns.diverging_palette(220, 20, as_cmap=True))
+        if savefig:
+            if not filename:
+                filename = 'corr.png'
+            plt.savefig(filename)
+        plt.show()
+
+    def analyse_data_structure(self, bins=50, savefig=False, filename=None):
+        self.df.hist(bins=bins, figsize=(20, 15))  # plot histogram for attributes
+        if savefig:
+            if not filename:
+                filename = 'histogram_features.png'
+            plt.savefig(filename)
+        plt.show()
 
 
 class ModelFitter:
@@ -117,11 +131,7 @@ class ModelFitter:
         self.clf.fit(x_data_train, y_data_train)
         end_time = time.time()
         self.train_predict, self.test_predict = self.clf.predict(x_data_train), self.clf.predict(x_data_test)
-        if penalty == 'l2':
-            train_score, sparsity, test_score = round(self.clf.score(x_data_train, y_data_train), 4), round(np.mean(
-                np.abs(self.clf.coef_) < 0.015) * 100, 4), round(self.clf.score(x_data_test, y_data_test), 4)
-        else:
-            train_score, sparsity, test_score = round(self.clf.score(x_data_train, y_data_train), 4), round(np.mean(
+        train_score, sparsity, test_score = round(self.clf.score(x_data_train, y_data_train), 4), round(np.mean(
                 self.clf.coef_ == 0) * 100, 4), round(self.clf.score(x_data_test, y_data_test), 4)
         train_precision, test_precision = round(precision_score(y_data_train, self.train_predict, average='weighted'),
                                                 4), \
@@ -134,22 +144,11 @@ class ModelFitter:
 
     def predict(self, x_data, y_data):
         # Use the trained model to make predictions on new data
-        return precision_score(y_data, (self.clf.predict(x_data)), average='weighted')
-
-    def plot_confusion_matrix(self, conf_matrix):
-        labels = [3, 4, 5, 6, 7, 8]
-        cm_df = pd.DataFrame(conf_matrix, index=labels, columns=labels)
-        # Set the axis labels and title
-        plt.figure(figsize=(8, 6))
-        sns.set(font_scale=1.4)  # Adjust font size
-        sns.heatmap(cm_df, annot=True, cmap="YlGnBu", fmt='g', xticklabels=labels, yticklabels=labels)
-        plt.ylabel('Actual')
-        plt.xlabel('Predicted')
-        plt.title('Confusion Matrix')
-        plt.show()
+        print('Original labels', np.array(y_data))
+        print('Predicted labels', self.clf.predict(x_data))
 
     def print_results(self, train_score, test_score, sparsity, train_precision, test_precision, exec_time, penalty):
-        print("---------{} norm----------".format(penalty))
+        print("Best {} norm stats,".format(penalty))
         print("Train Accuracy:", train_score, "Test Accuracy:", test_score, "Sparsity:", sparsity, "Train Precision:",
               train_precision, "Test Precision:", test_precision, "Execution Time:", exec_time)
 
@@ -162,7 +161,7 @@ class OrderedModelPredictor:
         self.y_test_stat = y_test_stat
 
     def fit(self):
-        self.model = OrderedModel(self.y_train_stat, self.X_train_stat, distr='probit')
+        self.model = OrderedModel(self.y_train_stat, self.X_train_stat, distr='logit')
         self.model.unique_y = np.unique(self.y_train_stat)
         self.result = self.model.fit(method='bfgs', disp=False)
 
@@ -180,6 +179,8 @@ class OrderedModelPredictor:
         pred_real_labels = np.array([self.model.unique_y[i] for i in pred_labels])
         pred_accuracy = accuracy_score(y_new, pred_real_labels)
         pred_precision = precision_score(y_new, pred_real_labels, average="weighted")
+        print('Original labels', np.array(y_new))
+        print('Predicted labels',pred_real_labels)
         return pred_accuracy, pred_precision
 
     def print_results(self):
@@ -194,164 +195,167 @@ class OrderedModelPredictor:
         test_accu_stat = accuracy_score(self.y_test_stat, test_pred_labels)
         train_precision_matrix = precision_score(self.y_train_stat, train_pred_labels, average="weighted")
         test_precision_matrix = precision_score(self.y_test_stat, test_pred_labels, average="weighted")
-        print('Training accuracy:', round(train_accu_stat*100, 2), 'Testing accuracy:', round(test_accu_stat*100, 2),
+        print('Training accuracy:', round(train_accu_stat * 100, 2), 'Testing accuracy:',
+              round(test_accu_stat * 100, 2),
               'Training precision:', round(train_precision_matrix, 4), 'Testing precision:',
               round(test_precision_matrix, 4))
         return conf_train, conf_test
 
 
 if __name__ == '__main__':
-    # load wine dataset
-    data = pd.read_csv("winequality-red.csv", delimiter=';')
-    # plot_hist(data)
-    # print(y.tail())
-    # analyse_data_structure(data)
-    # data["toatal_acidity"] = data["fixed acidity"] + data["volatile acidity"] + data["citric acid"]
-    # data["acidity_sulpher_ratio"] = data["toatal_acidity"] / data["sulphates"]
-    # data["acidity_sulpher_ratio"] = (data["fixed acidity"] + data["volatile acidity"] + data["citric acid"]) / data["sulphates"]
-    # data["chloro_suplher_ratio"] = data["chlorides"] / data["sulphates"]
-    # data = data.drop('citric acid', axis=1)
-    # data = data.drop('density', axis=1)
-    # cor2 = check_correlation(data, "quality")
-    # print(cor2)
-    # print(data.columns)
-    model_test_data, train_data = choose_fixed_indices(data)
-    # print(train_data.head())
-    # pd.set_option('display.max_columns', None)
-    # print(model_test_data.head())
-    # print("Length of train data :", len(train_d59.92 Testing accuracy: 54.86 ata))
-    # print("Length of model testing data", len(model_test_data))
-    # train_data_stat = train_data.copy()
-    X_mod_check = model_test_data.drop('quality', axis=1)
-    y_mod_check = model_test_data['quality']
+    data = pd.read_csv("winequality-red.csv", delimiter=';')  # load wine dataset
+    analyser = WineDataAnalyzer(data)
+    analyser.plot_hist('quality') #plot the histogram for quality
+    analyser.plot_correlation_heatmap() #plot the heatmap of the correlation
+    analyser.analyse_data_structure() #plot hist for numerical attribute
+    model_test_data, train_data = choose_fixed_indices(data)  # dataset for model check
+    X_mod_check = model_test_data.drop('quality', axis=1)  # Independent variables
+    y_mod_check = model_test_data['quality']  # dependent variable
     X = train_data.drop('quality', axis=1)
     y = train_data['quality']
-    # X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
-
-    # # copy for ordinal regression model training
-    # X_train_stat = X_train.copy()
-    # X_test_stat = X_test.copy()
-    y_train_stat = y_train.copy()
+    pd.set_option('display.max_columns', None)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y,
+                                                        random_state=42)  # Split the dataset for training and testing
+    y_train_stat = y_train.copy()  # target variables for ordinal model
     y_test_stat = y_test.copy()
 
     # Normalize the features using StandardScaler
     scalar = StandardScaler()
-    X_train = scalar.fit_transform(X_train)
-    X_test = scalar.transform(X_test)   #for logistic regression
-
-    X_train_stat = X_train.copy()# for orderedmodel
+    X_train = scalar.fit_transform(X_train)  # for logistic regression
+    X_test = scalar.transform(X_test)
+    X_train_stat = X_train.copy()  # for ordinal model
     X_test_stat = X_test.copy()
+    X_mod_check = scalar.transform(X_mod_check)  # Check ordinal/logistic regression model
 
-    # Turn up tolerance for faster convergence
-    clf_l1 = LogisticRegression(penalty='l1', C=0.04, solver='saga', multi_class='multinomial', tol=0.00001,
-                                class_weight='balanced',
-                                random_state=42)  # 0.6031 71.2121 0.5705
-    # clf_l1 = LogisticRegression(penalty = 'l1', C = 1.0, solver = 'liblinear', multi_class='ovr', random_state=42) # 0.6031 7.5758 0.5768
-    # clf_l1 = LogisticRegression(penalty='l1', C=0.05, solver='liblinear', multi_class='ovr', random_state=42) # 0.5835 69.697 0.558
-    # clf_l1 = LogisticRegression(penalty='l1', C=.08, solver='liblinear', random_state=42) #0.582 63.6364 0.5611
-    # clf_l1 = LogisticRegression(penalty='l1', C=.08, solver='liblinear', random_state=42) # 0.582 63.6364 0.5611
-    # clf_l1 = LogisticRegression(penalty='l1', C=0.01, solver='saga', multi_class='multinomial', class_weight='balanced') #0.2996 86.3636 0.2853
-    # clf_l1 = LogisticRegression(penalty='l1', C=0.09, solver='liblinear', multi_class='ovr', verbose=1, tol=0.00001, random_state=42) #0.5804 62.1212 0.5643
+    # =======================Logistic regression=============
+    print('========================Logistic Regression(No feature elimination)========================================')
+    estimator = LogisticRegression(max_iter=1000, class_weight='balanced', tol=0.00001, random_state=42)
+    # without norm
+    param_no_norm = [{'C': np.logspace(-5, 0, 10)}]
+    no_norm_best_param = grid_Search_new(X_train, y_train, estimator, param_no_norm, 'No Norm')
+    clf_no_norm = LogisticRegression(max_iter=1000, class_weight='balanced', tol=0.00001, random_state=42,
+                                     **no_norm_best_param)
+    model_fitter = ModelFitter(clf_no_norm)
+    train_score, test_score, sparsity, train_precision, test_precision, exec_time, conf_train, conf_test_log = \
+        model_fitter.fit(X_train, y_train, X_test, y_test, 'no_norm')
+    model_fitter.print_results(train_score, test_score, sparsity, train_precision, test_precision, exec_time, 'no_norm')
 
-    # l2 multinomial
-    # clf_l2 = LogisticRegression(penalty='l2', C=0.001, solver='lbfgs', multi_class='multinomial', verbose=1, random_state=42) #0.5702 57.5758 0.5643
-    # clf_l2 = LogisticRegression(penalty='l2', C=0.001, solver='newton-cg', multi_class='multinomial', verbose=1, random_state=42) #0.5702 57.5758 0.5643
-    # clf_l2 = LogisticRegression(penalty='l2', C=0.001, solver='sag', multi_class='multinomial', verbose=1, random_state=42)  # 0.5702 57.5758 0.5643
-    # clf_l2 = LogisticRegression(penalty='l2', C=0.1, solver='saga', multi_class='multinomial', verbose=1, random_state=42) #0.6243 7.5758 0.5611
-    # clf_l2 = LogisticRegression(penalty='l2', C=0.001, solver='saga', multi_class='multinomial', verbose=1, random_state=42)  # 0.5702 57.5758 0.5643
-    # l2 ovr
-    # clf_l2 = LogisticRegression(penalty='l2', C=0.001, solver='lbfgs', multi_class='ovr', verbose=1, random_state=42) #0.56 56.0606 0.5611
-    # clf_l2 = LogisticRegression(penalty='l2', C=0.001, solver='liblinear', multi_class='ovr', verbose=1, random_state=42) #0.5765 62.1212 0.5611
-    # clf_l2 = LogisticRegression(penalty='l2', C=0.001, solver='newton-cg', multi_class='ovr', verbose=1, random_state=42) #0.56 56.0606 0.5611
-    # clf_l2 = LogisticRegression(penalty='l2', C=0.001, solver='newton-cholesky', multi_class='ovr', verbose=1, random_state=42) #0.56 56.0606 0.5611
-    # clf_l2 = LogisticRegression(penalty='l2', C=0.001, solver='sag', multi_class='ovr', verbose=1, random_state=42) #0.56 56.0606 0.5611
-    #clf_l2 = LogisticRegression(penalty='l2', C=0.001, solver='saga', multi_class='ovr', class_weight='balanced',
-                                # random_state=42)  # 0.56 56.0606 0.5611
-    # clf_l2 = LogisticRegression(penalty='l2', C=1, solver='newton-cg', multi_class='ovr', class_weight='balanced',
-    #                             random_state=42)  # 0.56 56.0606 0.5611
-    clf_l2 = LogisticRegression(penalty='l2', C=0.005994842503189409, solver='liblinear', multi_class='ovr', tol=0.00001, class_weight='balanced',
-                                random_state=42)
-
-    # elastic-net
-    # clf_elastic = LogisticRegression(penalty='elasticnet', C=0.01, l1_ratio=0.2, solver='saga', class_weight='balanced',
-    #                                  multi_class='multinomial', random_state=42)  # 0.5851 71.2121 0.5705
-    clf_elastic = LogisticRegression(penalty='elasticnet', C=0.007, l1_ratio=0.2, solver='saga', class_weight='balanced', tol=0.00001,
-                                     random_state=42) #0.6027, 0.5763
-    # no penalty
-    # clf_no_penalty = LogisticRegression(solver='lbfgs', verbose=1, random_state=42) #0.6212 0.558
-    # clf_no_penalty = LogisticRegression(solver='newton-cg', verbose=1, random_state=42) #0.6212 0.558
-    # clf_no_penalty = LogisticRegression(solver='newton-cholesky', verbose=1, random_state=42) #0.6031 0.5768
-    clf_no_penalty = LogisticRegression(solver='sag', class_weight='balanced', random_state=42)  # 0.6212 0.558
-    # clf_no_penalty = LogisticRegression(solver='saga', verbose=1, random_state=42) #0.6204 0.0 0.558
-
-    # print('Best C % .4f' % clf.C_)
     # l1 norm
-    model_fitter = ModelFitter(clf_l1)
+    param_l1 = [{'C': np.logspace(-5, 0, 10), 'penalty': ['l1'], 'solver': ['liblinear'],
+                 'multi_class': ['ovr', 'Multinomial']}]
+    l1_norm_best_param = grid_Search_new(X_train, y_train, estimator, param_l1, 'l1 Norm')
+    clf_l1_norm = LogisticRegression(max_iter=1000, class_weight='balanced', tol=0.00001, random_state=42,
+                                     **l1_norm_best_param)
+    model_fitter = ModelFitter(clf_l1_norm)
     train_score, test_score, sparsity, train_precision, test_precision, exec_time, conf_train, conf_test = \
         model_fitter.fit(X_train, y_train, X_test, y_test, 'l1')
     model_fitter.print_results(train_score, test_score, sparsity, train_precision, test_precision, exec_time, 'l1')
-    # x_model_check = model_test_data('quality')
-    # y_model_check = model_test_data.drop('quality', axis=1)
-    # print(X_mod_check)
-    X_mod_check = scalar.transform(X_mod_check)
-    # print(X_mod_check)
-    print(model_fitter.predict(X_mod_check, y_mod_check))
-
+    plot_regularize(data, X_train, y_train)
+    best_logistic_conf = conf_test
+    best_logistic_model_fitter = model_fitter
 
     # l2 norm
-    model_fitter = ModelFitter(clf_l2)
-    train_score, test_score, sparsity, train_precision, test_precision, exec_time, conf_train, conf_test = model_fitter.fit(X_train, y_train,
-                                                                                                     X_test, y_test,
-                                                                                                     'l2')
+    param_l2 = [{'C': np.logspace(-5, 0, 10), 'penalty': ['l2'], 'solver': ['lbfgs', 'liblinear'],
+                 'multi_class': ['ovr', 'Multinomial']}]
+    l2_norm_best_param = grid_Search_new(X_train, y_train, estimator, param_l2, 'l2 Norm')
+    clf_l2_norm = LogisticRegression(max_iter=1000, class_weight='balanced', tol=0.00001, random_state=42,
+                                     **l2_norm_best_param)
+    model_fitter = ModelFitter(clf_l2_norm)
+    train_score, test_score, sparsity, train_precision, test_precision, exec_time, conf_train, conf_test = \
+        model_fitter.fit(X_train, y_train, X_test, y_test, 'l2')
     model_fitter.print_results(train_score, test_score, sparsity, train_precision, test_precision, exec_time, 'l2')
 
-    # elastic norm
-    model_fitter = ModelFitter(clf_elastic)
-    train_score, test_score, sparsity, train_precision, test_precision, exec_time, conf_train, conf_test = model_fitter.fit(X_train, y_train,
-                                                                                                     X_test, y_test,
-                                                                                                     'elastic_net')
+    # Elastic norm
+    estimator = LogisticRegression(max_iter=1000, random_state=42)
+    para_elastic = [{'C': np.logspace(-5, 0, 10), 'penalty': ['elasticnet'], 'solver': ['saga'],
+                     'l1_ratio': np.linspace(0, 1, 10)}]
+    elastic_norm_best_param = grid_Search_new(X_train, y_train, estimator, para_elastic, 'Elastic Norm')
+    clf_elastic_norm = LogisticRegression(max_iter=1000, class_weight='balanced', tol=0.00001, random_state=42,
+                                          **elastic_norm_best_param)
+    model_fitter = ModelFitter(clf_elastic_norm)
+    train_score, test_score, sparsity, train_precision, test_precision, exec_time, conf_train, conf_test = \
+        model_fitter.fit(X_train, y_train, X_test, y_test, 'elastic_net')
     model_fitter.print_results(train_score, test_score, sparsity, train_precision, test_precision, exec_time, 'elastic')
-    # model_fitter.plot_confusion_matrix(conf_test)
-
-    # no norm
-    model_fitter = ModelFitter(clf_no_penalty)
-    train_score, test_score, sparsity, train_precision, test_precision, exec_time, conf_train, conf_test_log = model_fitter.fit(X_train, y_train,
-                                                                                                     X_test, y_test,
-                                                                                                     'no_norm')
-    model_fitter.print_results(train_score, test_score, sparsity, train_precision, test_precision, exec_time, 'no_norm')
-    print(conf_test_log)
-    print('==================Grid Search=========================================')
-    # grid_Search(X_train, y_train)
-    # plot_regularize(data, X_train, y_train)
-    # print("Length of final model train data", len(train_set))
-    # print(test_set.head())
-    # print("Length of final test_data", len(test_set))
-    # train_set.plot(kind="scatter", x="fixed acidity", y="volatile acidity")
-    # plt.show()
-    '''
-    #plot scatter plot for attributes
-    train_set.plot(kind="scatter", x="fixed acidity", y="alcohol", c="quality",  s=np.interp(train_set["volatile acidity"], (train_set["volatile acidity"].min(), train_set["volatile acidity"].max()), (10, 100)), label="volatile acidity", cmap ="viridis", alpha=0.7, colorbar=True)
-    corr = train_set.corr()
-    plt.subplots(figsize=(15, 10))
-
-    #plot correlation matrics for the attributes
-    sns.heatmap(corr, xticklabels=corr.columns, yticklabels=corr.columns, annot=True, cmap=sns.diverging_palette(220, 20, as_cmap=True))
-    plt.savefig(fname="corr.png")
-    plt.show()
-    '''
-    # correlation_check
-    # cor1 = check_correlation(train_set, "quality") #check the co-orelation for original dataset
-    # data["toatal_acidity"] = data["fixed acidity"] + data["volatile acidity"] + data["citric acid"] #total acidity of wine
-    # data["alcohol_acidity_balance"] = data["alcohol"]/data["toatal_acidity"] #balance between alohol and acidity in wine
-    # data["chloro_suplher_ratio"] = data["chlorides"]/data["sulphates"] #Chlorides to sulphates ratio(atio of these two compounds in a wine)
-    # data["acidity_sulpher_ratio"] = data["toatal_acidity"]/data["sulphates"]
-    # cor2 = check_correlation(data, "quality")
-    # # print(cor1)
-    # print(cor2)
 
     print('==========Ordinal regression========')
-    ordinal_regression = OrderedModelPredictor(X_train_stat, y_train_stat, X_test_stat, y_test_stat)
+    smote = SMOTE()
+    X_train_resampled, y_train_resampled = smote.fit_resample(X_train_stat, y_train_stat)
+    ordinal_regression = OrderedModelPredictor(X_train_resampled, y_train_resampled, X_test_stat, y_test_stat)
     conf_train_stat, conf_test_stat = ordinal_regression.print_results()
-    # print(conf_test)
-    print(ordinal_regression.predict(X_mod_check, y_mod_check))
+    best_conf_test_stat = conf_test_stat
+    best_ordinal_regression = ordinal_regression
+
+    print('=================================Eliminated features==============================')
+    X_train_check_eliminate = np.delete(X_train, [9], axis=1)  # for eliminate features logistic
+    X_test_check_eliminate = np.delete(X_test, [9], axis=1)
+
+    X_train_stat_eliminate = np.delete(X_train_stat, [9], axis=1)  # for eliminate features orderedmodel
+    X_test_stat_eliminate = np.delete(X_test_stat, [9], axis=1)
+    X_mod_check_eliminated = np.delete(X_mod_check, [9], axis=1)
+
+    estimator = LogisticRegression(max_iter=1000, class_weight='balanced', tol=0.00001, random_state=42)
+    # without norm
+    param_no_norm = [{'C': np.logspace(-5, 0, 10)}]
+    no_norm_best_param = grid_Search_new(X_train_check_eliminate, y_train, estimator, param_no_norm, 'No Norm')
+    clf_no_norm = LogisticRegression(max_iter=1000, class_weight='balanced', tol=0.00001, random_state=42,
+                                     **no_norm_best_param)
+    model_fitter = ModelFitter(clf_no_norm)
+    train_score, test_score, sparsity, train_precision, test_precision, exec_time, conf_train, conf_test_log = \
+        model_fitter.fit(X_train_check_eliminate, y_train, X_test_check_eliminate, y_test, 'no_norm')
+    model_fitter.print_results(train_score, test_score, sparsity, train_precision, test_precision, exec_time, 'no_norm')
+    #print(model_fitter.predict(X_mod_check_eliminated, y_mod_check))
+
+    # l1 norm
+    param_l1 = [{'C': np.logspace(-5, 0, 10), 'penalty': ['l1'], 'solver': ['liblinear'],
+                 'multi_class': ['ovr', 'Multinomial']}]
+    l1_norm_best_param = grid_Search_new(X_train_check_eliminate, y_train, estimator, param_l1, 'l1 Norm')
+    clf_l1_norm = LogisticRegression(max_iter=1000, class_weight='balanced', tol=0.00001, random_state=42,
+                                     **l1_norm_best_param)
+    model_fitter = ModelFitter(clf_l1_norm)
+    train_score, test_score, sparsity, train_precision, test_precision, exec_time, conf_train, conf_test = \
+        model_fitter.fit(X_train_check_eliminate, y_train, X_test_check_eliminate, y_test, 'l1')
+    model_fitter.print_results(train_score, test_score, sparsity, train_precision, test_precision, exec_time, 'l1')
+
+    # l2 norm
+    param_l2 = [{'C': np.logspace(-5, 0, 10), 'penalty': ['l2'], 'solver': ['lbfgs', 'liblinear'],
+                 'multi_class': ['ovr', 'Multinomial']}]
+    l2_norm_best_param = grid_Search_new(X_train_check_eliminate, y_train, estimator, param_l2, 'l2 Norm')
+    clf_l2_norm = LogisticRegression(max_iter=1000, class_weight='balanced', tol=0.00001, random_state=42,
+                                     **l2_norm_best_param)
+    model_fitter = ModelFitter(clf_l2_norm)
+    train_score, test_score, sparsity, train_precision, test_precision, exec_time, conf_train, conf_test = \
+        model_fitter.fit(X_train_check_eliminate, y_train, X_test_check_eliminate, y_test, 'l2')
+    model_fitter.print_results(train_score, test_score, sparsity, train_precision, test_precision, exec_time, 'l2')
+
+    # Elastic norm
+    estimator = LogisticRegression(max_iter=1000)
+    para_elastic = [{'C': np.logspace(-5, 0, 10), 'penalty': ['elasticnet'], 'solver': ['saga'],
+                     'l1_ratio': np.linspace(0, 1, 10)}]
+    elastic_norm_best_param = grid_Search_new(X_train_check_eliminate, y_train, estimator, para_elastic, 'Elastic Norm')
+    clf_elastic_norm = LogisticRegression(max_iter=1000, class_weight='balanced', tol=0.00001, random_state=42,
+                                          **elastic_norm_best_param)
+    model_fitter = ModelFitter(clf_elastic_norm)
+    train_score, test_score, sparsity, train_precision, test_precision, exec_time, conf_train, conf_test = \
+        model_fitter.fit(X_train_check_eliminate, y_train, X_test_check_eliminate, y_test, 'elastic_net')
+    model_fitter.print_results(train_score, test_score, sparsity, train_precision, test_precision, exec_time, 'elastic')
+
+    print('==========Ordinal regression========')
+    smote = SMOTE()
+    X_train_stat_eliminate_resampled, y_train_resampled = smote.fit_resample(X_train_stat_eliminate, y_train_stat)
+
+    ordinal_regression = OrderedModelPredictor(X_train_stat_eliminate_resampled, y_train_resampled,
+                                               X_test_stat_eliminate, y_test_stat)
+    conf_train_stat, conf_test_stat = ordinal_regression.print_results()
+
+    print('============================= Condusion matric for best logistic regression model=====')
+    print(best_logistic_conf)
+    print('============================= Confusion matric for best ordinal logistic regression model=====')
+    print(best_conf_test_stat)
+
+    print('========================== Best Logistic regression model with model check dataset========================')
+    best_logistic_model_fitter.predict(X_mod_check, y_mod_check)
+    print('==========================================================================================')
+
+    print('========================== Best ordinal regression model with model check dataset========================')
+    best_ordinal_regression.predict(X_mod_check, y_mod_check)
+    print('==========================================================================================')
